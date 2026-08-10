@@ -1,0 +1,22 @@
+providers:
+  deepseek:
+    name: DeepSeek
+    adapter: openai_compatible
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    models:
+      - id: deepseek-chat
+        provider_model_id: deepseek-chat
+        name: DeepSeek Chat
+        capabilities: [chat, streaming]
+  glm:
+    name: GLM
+    adapter: openai_compatible
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: GLM_API_KEY
+    models:
+      - id: glm-4-plus
+        provider_model_id: glm-4-plus
+        name: GLM-4 Plus
+        capabilities: [chat, streaming]
+

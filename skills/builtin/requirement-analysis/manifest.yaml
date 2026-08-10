@@ -1,0 +1,15 @@
+schema_version: 1
+id: requirement-analysis
+version: 1.0.0
+aliases: [requirement_analysis]
+enabled: true
+selection:
+  mode: auto
+  keywords: [需求, 方案, 执行计划, requirement, plan]
+models:
+  allowed: []
+tools:
+  allowed: []
+limits:
+  max_steps: 6
+  timeout_seconds: 120

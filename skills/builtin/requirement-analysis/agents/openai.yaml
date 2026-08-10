@@ -1,0 +1,4 @@
+interface:
+  display_name: 需求分析
+  short_description: 将模糊需求整理为可执行计划
+  default_prompt: 分析当前需求并输出目标、范围、风险和执行步骤。
