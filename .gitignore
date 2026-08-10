@@ -1,4 +1,13 @@
+# Local environment files
 .env
+.env.*
+!.env.example
+
+# Local Agent workflow state
+.zeta/
+.codex/
+.agents/
+
 .venv/
 __pycache__/
 *.py[cod]
@@ -9,5 +18,3 @@ __pycache__/
 *.db-shm
 *.db-wal
 dist/
-
-.zeta/
