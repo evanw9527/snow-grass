@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Sequence
 from uuid import uuid4
 
 from snow_grass.agent.events import AgentEvent
+from snow_grass.agent.skill_selector import HybridSkillSelector
 from snow_grass.memory.schema import ContextBundle
 from snow_grass.providers.base import (
     ChatFunction,
@@ -21,7 +22,7 @@ from snow_grass.skills.executor import (
     SkillScriptExecutor,
     SkillScriptResult,
 )
-from snow_grass.skills.registry import SkillError, SkillRegistry
+from snow_grass.skills.registry import SkillError
 from snow_grass.skills.schema import LoadedSkill
 from snow_grass.tools.registry import ToolRegistry
 from snow_grass.tools.result_cache import CachePolicy, ToolResultReuseService
@@ -46,13 +47,13 @@ class AgentRunner:
         self,
         *,
         providers: ProviderRegistry,
-        skills: SkillRegistry,
+        skill_selector: HybridSkillSelector,
         tools: ToolRegistry,
         skill_executor: SkillScriptExecutor,
         tool_result_cache: ToolResultReuseService,
     ) -> None:
         self._providers = providers
-        self._skills = skills
+        self._skill_selector = skill_selector
         self._tools = tools
         self._skill_executor = skill_executor
         self._tool_result_cache = tool_result_cache
@@ -83,10 +84,14 @@ class AgentRunner:
                 run_id=run_id,
                 data={"step": "select_skill", "label": "选择 Skill"},
             )
-            skill = self._skills.select(
-                content=user_content, model_id=model_id, explicit_skill_id=skill_id
+            selection = await self._skill_selector.select(
+                model_id=model_id,
+                messages=list(messages),
+                explicit_skill_id=skill_id,
             )
+            skill = selection.skill
             selected_skill_id = skill.manifest.id if skill else None
+            max_steps = skill.manifest.limits.max_steps if skill else 1
             yield AgentEvent(
                 type="step.completed",
                 run_id=run_id,
@@ -94,6 +99,10 @@ class AgentRunner:
                     "step": "select_skill",
                     "label": "选择 Skill",
                     "skill_id": selected_skill_id,
+                    "selection_source": selection.source,
+                    "rule_score": selection.rule_score,
+                    "confidence": selection.confidence,
+                    "max_steps": max_steps,
                     **self._skill_event_data(skill),
                 },
             )
@@ -139,8 +148,7 @@ class AgentRunner:
                 *messages,
             ]
             chunks: list[str] = []
-            usage = TokenUsage()
-            max_steps = skill.manifest.limits.max_steps if skill else 1
+            usage = selection.usage
             completed = False
             for _ in range(max_steps):
                 call_buffers: dict[int, ToolCallDelta] = {}
@@ -298,8 +306,10 @@ class AgentRunner:
             return self._tool_error("invalid_tool_arguments", "Tool arguments must be an object")
         script = arguments.get("script")
         args = arguments.get("args", [])
-        if not isinstance(script, str) or not isinstance(args, list) or not all(
-            isinstance(argument, str) for argument in args
+        if (
+            not isinstance(script, str)
+            or not isinstance(args, list)
+            or not all(isinstance(argument, str) for argument in args)
         ):
             return self._tool_error(
                 "invalid_tool_arguments", "script must be a string and args must be strings"

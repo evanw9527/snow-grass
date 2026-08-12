@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -10,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from snow_grass.core.config import PROJECT_ROOT, Settings
 from snow_grass.main import create_app
-from snow_grass.providers.base import ChatMessage, ChatTool, ModelInfo, ModelStreamChunk
+from snow_grass.providers.base import (
+    ChatMessage,
+    ChatTool,
+    ModelInfo,
+    ModelRequestOptions,
+    ModelStreamChunk,
+)
 from snow_grass.providers.registry import ProviderRegistry
 
 
@@ -21,8 +28,24 @@ class SkillTestProvider:
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
+        if options == ModelRequestOptions(response_format="json_object"):
+            assert tools is None
+            selected = "weather-query" if "天气" in messages[-1].content else None
+            yield ModelStreamChunk(
+                delta=json.dumps(
+                    {
+                        "selected_skill_id": selected,
+                        "confidence": 0.95 if selected else 0.1,
+                        "reason": "测试路由",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
         assert tools is None
+        assert options is None
         yield ModelStreamChunk(delta="ok")
 
 
@@ -73,9 +96,7 @@ def draft_content(
     ]
     return {
         "files": {
-            "manifest.yaml": yaml.safe_dump(
-                manifest, allow_unicode=True, sort_keys=False
-            ),
+            "manifest.yaml": yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
             "SKILL.md": (
                 "---\n"
                 "name: acceptance-helper\n"
@@ -91,9 +112,7 @@ def draft_content(
             ),
             "references/format.md": "使用 Given / When / Then 组织验收标准。\n",
             "scripts/check_example.py": "print('example')\n",
-            "tests/selection.yaml": yaml.safe_dump(
-                tests, allow_unicode=True, sort_keys=False
-            ),
+            "tests/selection.yaml": yaml.safe_dump(tests, allow_unicode=True, sort_keys=False),
         }
     }
 
@@ -218,16 +237,13 @@ def test_skill_release_rollback_clone_and_archive(tmp_path: Path) -> None:
         assert archived.status_code == 200
         assert archived.json()["lifecycle_status"] == "archived"
         assert not any(
-            item["id"] == "acceptance-helper"
-            for item in client.get("/api/v1/skills").json()
+            item["id"] == "acceptance-helper" for item in client.get("/api/v1/skills").json()
         )
 
 
 def test_skill_enabled_state_survives_restart(tmp_path: Path) -> None:
     with TestClient(make_skill_app(tmp_path)) as client:
-        disabled = client.post(
-            "/api/v1/skills/requirement_analysis/disable"
-        ).json()
+        disabled = client.post("/api/v1/skills/requirement_analysis/disable").json()
         assert disabled["enabled"] is False
 
     with TestClient(make_skill_app(tmp_path)) as client:

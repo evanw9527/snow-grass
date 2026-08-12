@@ -14,6 +14,9 @@ class ContextStats:
     recent_message_tokens: int = 0
     recent_message_count: int = 0
     memory_count: int = 0
+    knowledge_tokens: int = 0
+    knowledge_count: int = 0
+    knowledge_degraded_reason: str | None = None
     trimmed_message_count: int = 0
     summary_version: int | None = None
     degraded_reason: str | None = None
@@ -27,6 +30,9 @@ class ContextStats:
             "recent_message_tokens": self.recent_message_tokens,
             "recent_message_count": self.recent_message_count,
             "memory_count": self.memory_count,
+            "knowledge_tokens": self.knowledge_tokens,
+            "knowledge_count": self.knowledge_count,
+            "knowledge_degraded_reason": self.knowledge_degraded_reason,
             "trimmed_message_count": self.trimmed_message_count,
             "summary_version": self.summary_version,
             "degraded_reason": self.degraded_reason,
@@ -57,4 +63,16 @@ class MemorySearchResult:
     memory_type: str
     importance: float
     confidence: float
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchResult:
+    id: str
+    content: str
+    title: str
+    source_type: str
+    source_id: str
+    source_app: str | None
+    occurred_at: str
     score: float

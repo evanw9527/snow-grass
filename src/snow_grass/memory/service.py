@@ -7,11 +7,13 @@ from dataclasses import replace
 from datetime import datetime
 
 from snow_grass.core.config import Settings
+from snow_grass.knowledge.service import KnowledgeService
 from snow_grass.memory.context_builder import ContextBuilder
 from snow_grass.memory.schema import (
     CompactionResult,
     ContextBundle,
     ContextStats,
+    KnowledgeSearchResult,
     MemorySearchResult,
 )
 from snow_grass.memory.security import MemorySecurity, SensitiveMemoryError
@@ -42,6 +44,7 @@ class MemoryService:
         context_builder: ContextBuilder,
         token_counter: TokenCounter,
         security: MemorySecurity,
+        knowledge: KnowledgeService | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
@@ -49,8 +52,16 @@ class MemoryService:
         self._context_builder = context_builder
         self._token_counter = token_counter
         self._security = security
+        self._knowledge = knowledge
 
-    async def prepare_context(self, *, session_id: str, model_id: str) -> ContextBundle:
+    async def prepare_context(
+        self,
+        *,
+        session_id: str,
+        model_id: str,
+        use_knowledge: bool = False,
+        knowledge_degraded_reason: str | None = None,
+    ) -> ContextBundle:
         if not self._settings.memory_enabled:
             records = await self._repository.list_messages(session_id)
             messages = [ChatMessage(role=item.role, content=item.content) for item in records]
@@ -75,11 +86,33 @@ class MemoryService:
             (message.content for message in reversed(messages) if message.role == "user"), ""
         )
         memories = await self._retrieve_memories(session_id=session_id, query=query)
+        knowledge: list[KnowledgeSearchResult] = []
+        if use_knowledge and self._knowledge is not None and query.strip():
+            result = await self._knowledge.search(
+                query=query,
+                limit=self._settings.knowledge_retrieval_limit,
+            )
+            knowledge_degraded_reason = result.degraded_reason
+            knowledge = [
+                KnowledgeSearchResult(
+                    id=item.id,
+                    content=item.content,
+                    title=item.title,
+                    source_type=item.source_type.value,
+                    source_id=item.source_id,
+                    source_app=item.source_app,
+                    occurred_at=item.occurred_at.isoformat(),
+                    score=item.score,
+                )
+                for item in result.items
+            ]
         bundle = self._context_builder.build(
             messages=messages,
             summary=summary.content if summary else None,
             summary_version=summary.version if summary else None,
             memories=memories,
+            knowledge=knowledge,
+            knowledge_degraded_reason=knowledge_degraded_reason,
             degraded_reason=compaction.reason,
         )
         try:

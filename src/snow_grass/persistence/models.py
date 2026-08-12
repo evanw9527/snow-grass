@@ -32,6 +32,7 @@ class SessionRecord(Base):
     title: Mapped[str] = mapped_column(String(200))
     model_id: Mapped[str] = mapped_column(String(120))
     skill_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    knowledge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

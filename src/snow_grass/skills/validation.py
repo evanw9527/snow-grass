@@ -60,11 +60,7 @@ class SkillValidator:
 
         for path, serialized in content.files.items():
             if self._security.contains_sensitive(serialized):
-                issues.append(
-                    self._error(
-                        "sensitive_content", path, f"{path} 包含疑似密钥或凭据"
-                    )
-                )
+                issues.append(self._error("sensitive_content", path, f"{path} 包含疑似密钥或凭据"))
 
         try:
             manifest = content.package_manifest()
@@ -118,9 +114,7 @@ class SkillValidator:
                     )
             except (ValueError, yaml.YAMLError) as exc:
                 issues.append(
-                    self._error(
-                        "invalid_agents_metadata", "agents/openai.yaml", str(exc)
-                    )
+                    self._error("invalid_agents_metadata", "agents/openai.yaml", str(exc))
                 )
 
         for unnecessary in ("README.md", "CHANGELOG.md", "INSTALLATION_GUIDE.md"):
@@ -138,9 +132,7 @@ class SkillValidator:
             model = model_catalog.get(model_id)
             if model is None:
                 issues.append(
-                    self._error(
-                        "unknown_model", "manifest.yaml", f"未知模型：{model_id}"
-                    )
+                    self._error("unknown_model", "manifest.yaml", f"未知模型：{model_id}")
                 )
             elif not model.available:
                 issues.append(
@@ -161,9 +153,7 @@ class SkillValidator:
                     )
                 )
 
-        keywords = [
-            keyword.strip() for keyword in manifest.selection.keywords if keyword.strip()
-        ]
+        keywords = [keyword.strip() for keyword in manifest.selection.keywords if keyword.strip()]
         try:
             display_name = content.display_name()
             _, description, _ = content.skill_metadata()
@@ -173,9 +163,7 @@ class SkillValidator:
         try:
             test_cases = content.selection_tests()
         except ValueError as exc:
-            issues.append(
-                self._error("invalid_selection_tests", "tests/selection.yaml", str(exc))
-            )
+            issues.append(self._error("invalid_selection_tests", "tests/selection.yaml", str(exc)))
             test_cases = []
         if len(test_cases) > self._settings.skill_max_test_cases:
             issues.append(
@@ -189,8 +177,7 @@ class SkillValidator:
         test_results: list[SkillTestResult] = []
         for test_case in test_cases:
             supports_model = (
-                not manifest.models.allowed
-                or test_case.model_id in manifest.models.allowed
+                not manifest.models.allowed or test_case.model_id in manifest.models.allowed
             )
             selected = supports_model and bool(
                 selection_score(
@@ -198,6 +185,7 @@ class SkillValidator:
                     name=display_name,
                     description=description,
                     keywords=keywords,
+                    intent_rules=manifest.selection.intent_rules,
                     content=test_case.input,
                 )
             )

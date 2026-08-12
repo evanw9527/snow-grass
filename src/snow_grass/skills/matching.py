@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+
+from snow_grass.skills.schema import SkillIntentRule
 
 METADATA_STOP_TERMS = {
     "使用",
@@ -22,19 +25,29 @@ def selection_score(
     name: str,
     description: str,
     keywords: list[str],
+    intent_rules: Sequence[SkillIntentRule] = (),
     content: str,
 ) -> int:
     normalized = content.casefold()
     keyword_score = sum(
-        20
-        for keyword in keywords
-        if keyword.strip() and keyword.casefold() in normalized
+        20 for keyword in keywords if keyword.strip() and keyword.casefold() in normalized
     )
-    name_score = _metadata_match_score(
-        f"{skill_id} {name}", normalized, weight=3
-    )
+    name_score = _metadata_match_score(f"{skill_id} {name}", normalized, weight=3)
     description_score = _metadata_match_score(description, normalized, weight=1)
-    return keyword_score + name_score + description_score
+    intent_score = _intent_match_score(intent_rules, normalized)
+    return keyword_score + name_score + description_score + intent_score
+
+
+def _intent_match_score(rules: Sequence[SkillIntentRule], normalized: str) -> int:
+    best = 0
+    for rule in rules:
+        if any(term.casefold() in normalized for term in rule.none_of if term.strip()):
+            continue
+        groups = [[term.casefold() for term in group if term.strip()] for group in rule.all_of]
+        groups = [group for group in groups if group]
+        if groups and all(any(term in normalized for term in group) for group in groups):
+            best = max(best, 40 + len(groups) * 10)
+    return best
 
 
 def _metadata_match_score(metadata: str, normalized: str, *, weight: int) -> int:

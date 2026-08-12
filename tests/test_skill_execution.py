@@ -16,6 +16,7 @@ from snow_grass.providers.base import (
     ChatMessage,
     ChatTool,
     ModelInfo,
+    ModelRequestOptions,
     ModelStreamChunk,
     TokenUsage,
     ToolCallDelta,
@@ -112,9 +113,11 @@ class ScriptCallingProvider:
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         assert model_id == "provider-tool-model"
         assert tools is not None
+        assert options is None
         assert tools[0].function.name == "run_skill_script"
         self.calls += 1
         if messages[-1].role != "tool":

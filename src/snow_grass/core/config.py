@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     skill_script_execution_enabled: bool = True
     skill_script_timeout_seconds: int = Field(default=30, ge=1, le=300)
     skill_script_max_output_chars: int = Field(default=65_536, ge=1_024, le=1_000_000)
+    skill_selection_rule_threshold: int = Field(default=20, ge=1, le=1_000)
+    skill_selection_rule_margin: int = Field(default=10, ge=0, le=1_000)
+    skill_selection_model_confidence: float = Field(default=0.6, ge=0, le=1)
+    skill_selection_model_timeout_seconds: float = Field(default=8.0, ge=0.5, le=60)
     codex_state_db_path: Path = Path.home() / ".codex/state_5.sqlite"
     memory_enabled: bool = True
     memory_workspace_id: str = Field(default="default", min_length=1, max_length=120)
@@ -60,6 +64,12 @@ class Settings(BaseSettings):
     memory_summary_target_tokens: int = Field(default=1_200, ge=128, le=16_000)
     memory_retrieval_limit: int = Field(default=8, ge=0, le=50)
     memory_auto_extract_enabled: bool = False
+    activity_retention_days: int = Field(default=30, ge=1, le=3650)
+    knowledge_enabled: bool = True
+    knowledge_retrieval_limit: int = Field(default=8, ge=0, le=20)
+    knowledge_context_token_budget: int = Field(default=2_000, ge=128, le=32_000)
+    knowledge_summary_retention_days: int = Field(default=365, ge=1, le=3650)
+    knowledge_search_timeout_ms: int = Field(default=300, ge=50, le=10_000)
     deepseek_api_key: SecretStr | None = Field(default=None, validation_alias="DEEPSEEK_API_KEY")
     glm_api_key: SecretStr | None = Field(default=None, validation_alias="GLM_API_KEY")
 

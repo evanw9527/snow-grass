@@ -63,6 +63,10 @@ class ModelStreamChunk(BaseModel):
     usage: TokenUsage | None = None
 
 
+class ModelRequestOptions(BaseModel):
+    response_format: Literal["text", "json_object"] = "text"
+
+
 class ProviderError(RuntimeError):
     pass
 
@@ -74,4 +78,5 @@ class ModelProvider(Protocol):
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]: ...

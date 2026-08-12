@@ -8,9 +8,17 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class SkillIntentRule(BaseModel):
+    """Match an intent when every synonym group has at least one hit."""
+
+    all_of: list[list[str]] = Field(default_factory=list, max_length=12)
+    none_of: list[str] = Field(default_factory=list, max_length=40)
+
+
 class SkillSelection(BaseModel):
     mode: str = "auto"
     keywords: list[str] = Field(default_factory=list)
+    intent_rules: list[SkillIntentRule] = Field(default_factory=list, max_length=20)
 
 
 class SkillModels(BaseModel):
@@ -140,9 +148,7 @@ class SkillDraftContent(BaseModel):
         )
 
     @classmethod
-    def from_storage(
-        cls, raw: dict[str, object], *, skill_id: str
-    ) -> SkillDraftContent:
+    def from_storage(cls, raw: dict[str, object], *, skill_id: str) -> SkillDraftContent:
         """Load the package format or migrate a pre-package declarative draft in memory."""
         if "files" in raw:
             return cls.model_validate(raw)
@@ -185,9 +191,7 @@ class SkillDraftContent(BaseModel):
             try:
                 files[relative] = path.read_text(encoding="utf-8")
             except UnicodeDecodeError as exc:
-                raise ValueError(
-                    f"Skill package file must be UTF-8 text: {relative}"
-                ) from exc
+                raise ValueError(f"Skill package file must be UTF-8 text: {relative}") from exc
         return cls(files=files)
 
     def validate_paths(self) -> None:
@@ -218,9 +222,7 @@ class SkillDraftContent(BaseModel):
             raise ValueError("SKILL.md frontmatter is not closed")
         metadata = yaml.safe_load(document[4:closing]) or {}
         if not isinstance(metadata, dict) or set(metadata) != {"name", "description"}:
-            raise ValueError(
-                "SKILL.md frontmatter must contain only name and description"
-            )
+            raise ValueError("SKILL.md frontmatter must contain only name and description")
         name = str(metadata.get("name", "")).strip()
         description = str(metadata.get("description", "")).strip()
         body = document[closing + 5 :].strip()
@@ -281,14 +283,10 @@ class SkillDraftContent(BaseModel):
             interface = raw.setdefault("interface", {})
             interface["display_name"] = name
             interface["default_prompt"] = f"使用 {name} 完成当前任务。"
-            files["agents/openai.yaml"] = yaml.safe_dump(
-                raw, allow_unicode=True, sort_keys=False
-            )
+            files["agents/openai.yaml"] = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False)
         return self.model_copy(update={"files": files})
 
-    def to_loaded_skill(
-        self, *, skill_id: str, version: str, enabled: bool
-    ) -> LoadedSkill:
+    def to_loaded_skill(self, *, skill_id: str, version: str, enabled: bool) -> LoadedSkill:
         self.validate_paths()
         package_manifest = self.package_manifest()
         if package_manifest.id != skill_id:

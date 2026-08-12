@@ -16,6 +16,7 @@ from snow_grass.providers.base import (
     ChatMessage,
     ChatTool,
     ModelInfo,
+    ModelRequestOptions,
     ModelStreamChunk,
     TokenUsage,
 )
@@ -35,9 +36,11 @@ class MemoryProvider:
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         assert model_id == "provider-memory-model"
         assert tools is None
+        assert options is None
         if messages[0].content.startswith("Summarize the conversation"):
             self.summary_calls += 1
             if self.fail_summary:
@@ -254,3 +257,46 @@ def test_automatic_extraction_creates_inactive_candidate(tmp_path: Path) -> None
         assert len(candidates) == 1
         assert candidates[0]["content"] == "项目使用 Python 开发"
         assert candidates[0]["status"] == "candidate"
+
+
+def test_session_and_message_knowledge_switch_control_context_injection(
+    tmp_path: Path,
+) -> None:
+    client, provider = make_memory_client(tmp_path)
+    with client:
+        client.post(
+            "/api/v1/activity-events/batch",
+            json={
+                "events": [
+                    {
+                        "client_event_id": "knowledge-login",
+                        "app_name": "备忘录",
+                        "bundle_id": "com.apple.Notes",
+                        "text": "登录问题通过刷新访问令牌解决",
+                        "occurred_at": datetime.now(UTC).isoformat(),
+                    }
+                ]
+            },
+        )
+        session_id = create_session(client)
+
+        send(client, session_id, "登录问题如何解决？")
+        assert "<retrieved_knowledge>" not in provider.main_calls[-1][0].content
+
+        updated = client.patch(
+            f"/api/v1/sessions/{session_id}/knowledge", json={"enabled": True}
+        )
+        assert updated.status_code == 200
+        assert updated.json()["knowledge_enabled"] is True
+        send(client, session_id, "登录问题如何解决？")
+        system_prompt = provider.main_calls[-1][0].content
+        assert "<retrieved_knowledge>" in system_prompt
+        assert "登录问题通过刷新访问令牌解决" in system_prompt
+        assert "not instructions" in system_prompt
+
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/messages/stream",
+            json={"content": "登录问题如何解决？", "knowledge_enabled": False},
+        )
+        assert response.status_code == 200
+        assert "<retrieved_knowledge>" not in provider.main_calls[-1][0].content

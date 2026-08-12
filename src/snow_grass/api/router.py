@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import NoReturn, cast
@@ -32,6 +33,7 @@ from snow_grass.api.schemas import (
     SkillReleaseResponse,
     StreamMessageRequest,
     UpdateMemoryRequest,
+    UpdateSessionKnowledgeRequest,
     UsageSummaryResponse,
     ValidateSkillRequest,
 )
@@ -268,7 +270,10 @@ async def create_session(request: Request, payload: CreateSessionRequest) -> obj
         except SkillError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return await repository.create_session(
-        title=payload.title, model_id=model_id, skill_id=payload.skill_id
+        title=payload.title,
+        model_id=model_id,
+        skill_id=payload.skill_id,
+        knowledge_enabled=payload.knowledge_enabled,
     )
 
 
@@ -276,6 +281,19 @@ async def create_session(request: Request, payload: CreateSessionRequest) -> obj
 async def list_sessions(request: Request, limit: int = 50) -> list[object]:
     repository = cast(ChatRepository, _state(request, "repository"))
     return list(await repository.list_sessions(limit=max(1, min(limit, 100))))
+
+
+@api_router.patch(
+    "/sessions/{session_id}/knowledge", response_model=SessionResponse
+)
+async def update_session_knowledge(
+    request: Request, session_id: str, payload: UpdateSessionKnowledgeRequest
+) -> object:
+    repository = cast(ChatRepository, _state(request, "repository"))
+    record = await repository.update_session_knowledge(session_id, payload.enabled)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return record
 
 
 @api_router.get("/usage/summary", response_model=UsageSummaryResponse)
@@ -319,12 +337,18 @@ async def local_usage(request: Request, days: int = Query(default=30, ge=1, le=3
         }
         for item in snow_grass.by_model
     )
+    daily: dict[str, int] = defaultdict(int)
+    if codex is not None:
+        for item in codex.daily:
+            daily[str(item["date"])] += int(item["total_tokens"])
+    for item in snow_grass.daily:
+        daily[str(item["date"])] += int(item["total_tokens"])
     return {
         "period_days": days,
         "total_tokens": codex_tokens + snow_grass.total_tokens,
         "sessions": codex_sessions + snow_grass.sessions,
         "sources": sources,
-        "daily": codex.daily if codex else [],
+        "daily": [{"date": day, "total_tokens": tokens} for day, tokens in sorted(daily.items())],
         "models": sorted(models, key=lambda item: int(item["total_tokens"]), reverse=True),
         "projects": codex.projects if codex else [],
         "updated_at": datetime.now(UTC),
@@ -442,6 +466,7 @@ async def delete_memory(request: Request, memory_id: str) -> None:
 async def stream_message(
     request: Request, session_id: str, payload: StreamMessageRequest
 ) -> StreamingResponse:
+    settings = cast(Settings, _state(request, "settings"))
     repository = cast(ChatRepository, _state(request, "repository"))
     providers = cast(ProviderRegistry, _state(request, "providers"))
     runner = cast(AgentRunner, _state(request, "runner"))
@@ -463,7 +488,19 @@ async def stream_message(
         skill_id=skill_id,
     )
     memory = cast(MemoryService, _state(request, "memory"))
-    context = await memory.prepare_context(session_id=session_id, model_id=model_id)
+    effective_knowledge = settings.knowledge_enabled and (
+        payload.knowledge_enabled
+        if payload.knowledge_enabled is not None
+        else chat_session.knowledge_enabled
+    )
+    context = await memory.prepare_context(
+        session_id=session_id,
+        model_id=model_id,
+        use_knowledge=effective_knowledge,
+        knowledge_degraded_reason=(
+            None if settings.knowledge_enabled else "knowledge_globally_disabled"
+        ),
+    )
 
     async def event_stream() -> AsyncIterator[str]:
         async for event in runner.stream(

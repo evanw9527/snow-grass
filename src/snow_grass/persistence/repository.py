@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,6 +20,8 @@ from snow_grass.persistence.models import (
     ToolResultCacheRecord,
     utc_now,
 )
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +42,7 @@ class UsageSummary:
     requests: int
     sessions: int
     by_model: list[ModelUsageSummary]
+    daily: list[dict[str, int | str]]
 
 
 class ToolResultCacheRepository:
@@ -125,9 +130,20 @@ class ChatRepository:
         self._session_factory = session_factory
 
     async def create_session(
-        self, *, title: str, model_id: str, skill_id: str | None = None
+        self,
+        *,
+        title: str,
+        model_id: str,
+        skill_id: str | None = None,
+        knowledge_enabled: bool = False,
     ) -> SessionRecord:
-        record = SessionRecord(id=str(uuid4()), title=title, model_id=model_id, skill_id=skill_id)
+        record = SessionRecord(
+            id=str(uuid4()),
+            title=title,
+            model_id=model_id,
+            skill_id=skill_id,
+            knowledge_enabled=knowledge_enabled,
+        )
         async with self._session_factory() as session:
             session.add(record)
             await session.commit()
@@ -142,6 +158,19 @@ class ChatRepository:
         statement = select(SessionRecord).order_by(SessionRecord.updated_at.desc()).limit(limit)
         async with self._session_factory() as session:
             return list((await session.scalars(statement)).all())
+
+    async def update_session_knowledge(
+        self, session_id: str, enabled: bool
+    ) -> SessionRecord | None:
+        async with self._session_factory() as session:
+            record = await session.get(SessionRecord, session_id)
+            if record is None:
+                return None
+            record.knowledge_enabled = enabled
+            record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
 
     async def add_message(
         self,
@@ -417,7 +446,8 @@ class ChatRepository:
             return (await session.scalars(statement)).first()
 
     async def usage_summary(self, days: int = 30) -> UsageSummary:
-        cutoff = utc_now() - timedelta(days=days)
+        first_day = datetime.now(SHANGHAI).date() - timedelta(days=days - 1)
+        cutoff = datetime.combine(first_day, datetime.min.time(), tzinfo=SHANGHAI).astimezone(UTC)
         filters = (
             MessageRecord.role == "assistant",
             MessageRecord.total_tokens > 0,
@@ -443,9 +473,19 @@ class ChatRepository:
             .group_by(model_name)
             .order_by(func.sum(MessageRecord.total_tokens).desc())
         )
+        daily_statement = select(MessageRecord.created_at, MessageRecord.total_tokens).where(
+            *filters
+        )
         async with self._session_factory() as session:
             totals = (await session.execute(totals_statement)).one()
             model_rows = (await session.execute(by_model_statement)).all()
+            daily_rows = (await session.execute(daily_statement)).all()
+        by_day: dict[str, int] = defaultdict(int)
+        for created_at, total_tokens in daily_rows:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            day = created_at.astimezone(SHANGHAI).date().isoformat()
+            by_day[day] += int(total_tokens or 0)
         return UsageSummary(
             period_days=days,
             input_tokens=int(totals[0] or 0),
@@ -463,4 +503,5 @@ class ChatRepository:
                 )
                 for row in model_rows
             ],
+            daily=[{"date": day, "total_tokens": tokens} for day, tokens in sorted(by_day.items())],
         )

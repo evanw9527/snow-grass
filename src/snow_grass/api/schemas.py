@@ -12,6 +12,11 @@ class CreateSessionRequest(BaseModel):
     title: str = Field(default="新对话", min_length=1, max_length=200)
     model_id: str | None = None
     skill_id: str | None = None
+    knowledge_enabled: bool = False
+
+
+class UpdateSessionKnowledgeRequest(BaseModel):
+    enabled: bool
 
 
 class SessionResponse(BaseModel):
@@ -21,6 +26,7 @@ class SessionResponse(BaseModel):
     title: str
     model_id: str
     skill_id: str | None
+    knowledge_enabled: bool
     created_at: datetime
     updated_at: datetime
 
@@ -104,6 +110,7 @@ class StreamMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
     model_id: str | None = None
     skill_id: str | None = None
+    knowledge_enabled: bool | None = None
 
 
 MemoryScope = Literal["session", "workspace"]
@@ -132,6 +139,9 @@ class ContextStatsResponse(BaseModel):
     recent_message_tokens: int
     recent_message_count: int
     memory_count: int
+    knowledge_tokens: int = 0
+    knowledge_count: int = 0
+    knowledge_degraded_reason: str | None = None
     trimmed_message_count: int
     summary_version: int | None
     degraded_reason: str | None

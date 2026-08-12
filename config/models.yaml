@@ -6,8 +6,8 @@ providers:
     api_key_env: DEEPSEEK_API_KEY
     models:
       - id: deepseek-chat
-        provider_model_id: deepseek-chat
-        name: DeepSeek Chat
+        provider_model_id: deepseek-v4-flash
+        name: DeepSeek V4 Flash
         capabilities: [chat, streaming]
   glm:
     name: GLM
@@ -19,4 +19,3 @@ providers:
         provider_model_id: glm-4-plus
         name: GLM-4 Plus
         capabilities: [chat, streaming]
-

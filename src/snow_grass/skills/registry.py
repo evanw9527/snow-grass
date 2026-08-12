@@ -90,6 +90,10 @@ class SkillRegistry:
             self._validate_available(skill, model_id)
             return skill
 
+        candidates = self.rank(content=content, model_id=model_id)
+        return candidates[0][1] if candidates else None
+
+    def rank(self, *, content: str, model_id: str) -> list[tuple[int, LoadedSkill]]:
         normalized = content.casefold()
         candidates: list[tuple[int, LoadedSkill]] = []
         for skill in self._snapshot().values():
@@ -102,11 +106,21 @@ class SkillRegistry:
                 name=skill.manifest.name,
                 description=skill.manifest.description,
                 keywords=skill.manifest.selection.keywords,
+                intent_rules=skill.manifest.selection.intent_rules,
                 content=normalized,
             )
             if score:
                 candidates.append((score, skill))
-        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+        return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+    def auto_candidates(self, *, model_id: str) -> list[LoadedSkill]:
+        return [
+            skill
+            for skill in self._snapshot().values()
+            if skill.manifest.enabled
+            and skill.manifest.selection.mode == "auto"
+            and self._supports_model(skill, model_id)
+        ]
 
     def _require(self, skill_id: str) -> LoadedSkill:
         snapshot = self._snapshot()

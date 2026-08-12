@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,7 @@ from snow_grass.providers.base import (
     ChatMessage,
     ChatTool,
     ModelInfo,
+    ModelRequestOptions,
     ModelStreamChunk,
     TokenUsage,
 )
@@ -29,12 +30,14 @@ class FakeProvider:
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         assert model_id == "provider-test-model"
         assert messages[0].role == "system"
         assert "Test Model from Test" in messages[0].content
         assert "Never claim to be Claude" in messages[0].content
         assert tools is None
+        assert options is None
         yield ModelStreamChunk(delta="测试")
         yield ModelStreamChunk(delta="回答")
         yield ModelStreamChunk(usage=TokenUsage(input_tokens=12, output_tokens=7, total_tokens=19))
@@ -217,13 +220,42 @@ def test_session_stream_and_history(tmp_path: Path) -> None:
         }
         assert local_usage["projects"][0]["name"] == "demo"
 
+        connection = sqlite3.connect(tmp_path / "test.db")
+        yesterday = (
+            (datetime.now(ZoneInfo("Asia/Shanghai")) - timedelta(days=1))
+            .replace(hour=12, minute=0, second=0, microsecond=0)
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
+        connection.execute(
+            "INSERT INTO chat_messages ("
+            "id, session_id, role, content, model_id, skill_id, created_at, "
+            "input_tokens, output_tokens, total_tokens"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "historical-assistant-message",
+                session_id,
+                "assistant",
+                "昨日回答",
+                "test-model",
+                None,
+                yesterday.isoformat(sep=" "),
+                80,
+                20,
+                100,
+            ),
+        )
+        connection.commit()
+        connection.close()
+
         today_usage = client.get("/api/v1/usage/local?days=1").json()
         assert today_usage["total_tokens"] == 219
         assert today_usage["sources"][0]["total_tokens"] == 200
+        assert today_usage["sources"][1]["total_tokens"] == 19
         assert today_usage["daily"] == [
             {
                 "date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
-                "total_tokens": 200,
+                "total_tokens": 219,
             }
         ]
 

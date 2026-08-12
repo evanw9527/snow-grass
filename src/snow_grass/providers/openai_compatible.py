@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import cast
+from typing import Any, cast
 
 from openai import APIError, AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
@@ -9,6 +9,7 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 from snow_grass.providers.base import (
     ChatMessage,
     ChatTool,
+    ModelRequestOptions,
     ModelStreamChunk,
     ProviderError,
     TokenUsage,
@@ -26,6 +27,7 @@ class OpenAICompatibleProvider:
         model_id: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ChatTool] | None = None,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelStreamChunk]:
         try:
             message_params = [
@@ -35,28 +37,24 @@ class OpenAICompatibleProvider:
                 )
                 for message in messages
             ]
+            request: dict[str, Any] = {
+                "model": model_id,
+                "messages": message_params,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
             if tools:
-                stream = await self._client.chat.completions.create(
-                    model=model_id,
-                    messages=message_params,
-                    tools=[
+                request["tools"] = [
                         cast(
                             ChatCompletionToolParam,
                             tool.model_dump(mode="json"),
                         )
                         for tool in tools
-                    ],
-                    tool_choice="auto",
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
-            else:
-                stream = await self._client.chat.completions.create(
-                    model=model_id,
-                    messages=message_params,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
+                    ]
+                request["tool_choice"] = "auto"
+            if options and options.response_format == "json_object":
+                request["response_format"] = {"type": "json_object"}
+            stream = await self._client.chat.completions.create(**request)
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 content = delta.content if delta else None
