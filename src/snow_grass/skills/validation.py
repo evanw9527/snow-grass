@@ -7,6 +7,7 @@ import yaml
 from snow_grass.core.config import Settings
 from snow_grass.memory.security import MemorySecurity
 from snow_grass.providers.registry import ProviderRegistry
+from snow_grass.skills.executor import RUN_SKILL_SCRIPT_TOOL
 from snow_grass.skills.matching import selection_score
 from snow_grass.skills.schema import (
     SkillDraftContent,
@@ -143,8 +144,10 @@ class SkillValidator:
                     )
                 )
 
+        script_paths = [path for path in content.files if path.startswith("scripts/")]
         for tool_name in manifest.tools.allowed:
-            if not self._tools.list_allowed([tool_name]):
+            known_script_tool = tool_name == RUN_SKILL_SCRIPT_TOOL and bool(script_paths)
+            if not known_script_tool and not self._tools.list_allowed([tool_name]):
                 issues.append(
                     self._error(
                         "unknown_tool",
@@ -208,7 +211,6 @@ class SkillValidator:
                     )
                 )
 
-        script_paths = [path for path in content.files if path.startswith("scripts/")]
         if manifest.cache.enabled and not script_paths:
             issues.append(
                 self._error(
@@ -238,6 +240,15 @@ class SkillValidator:
                     )
                 )
         if script_paths:
+            if RUN_SKILL_SCRIPT_TOOL not in manifest.tools.allowed:
+                issues.append(
+                    self._warning(
+                        "implicit_skill_script_tool",
+                        "manifest.yaml",
+                        "兼容模式已自动提供 run_skill_script；"
+                        "下个 Skill 版本请在 tools.allowed 中显式声明",
+                    )
+                )
             issues.append(
                 self._warning(
                     "scripts_run_as_server_user",

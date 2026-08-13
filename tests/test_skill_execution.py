@@ -8,6 +8,11 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from snow_grass.agent.tool_adapter import (
+    SkillScriptToolAdapter,
+    ToolDispatcher,
+    ToolInvocationContext,
+)
 from snow_grass.core.config import PROJECT_ROOT, Settings
 from snow_grass.main import create_app
 from snow_grass.persistence.database import Database
@@ -24,6 +29,7 @@ from snow_grass.providers.base import (
 from snow_grass.providers.registry import ProviderRegistry
 from snow_grass.skills.executor import SkillScriptExecutionError, SkillScriptExecutor
 from snow_grass.skills.schema import LoadedSkill, SkillDraftContent
+from snow_grass.tools.registry import ToolDefinition, ToolRegistry
 from snow_grass.tools.result_cache import ToolResultReuseService
 
 
@@ -206,7 +212,8 @@ def test_agent_executes_selected_skill_script(tmp_path: Path) -> None:
             json={"content": "执行脚本测试"},
         )
         assert response.status_code == 200
-        assert '"step": "execute_skill_script"' in response.text
+        assert '"step": "execute_tool"' in response.text
+        assert '"tool_name": "run_skill_script"' in response.text
         assert '"skill_id": "script-test"' in response.text
         assert '"skill_name": "script-test"' in response.text
         assert '"skill_version": "1.0.0"' in response.text
@@ -242,6 +249,65 @@ def test_agent_executes_selected_skill_script(tmp_path: Path) -> None:
         assert messages[-1]["input_tokens"] == 24
         assert messages[-1]["output_tokens"] == 6
         assert messages[-1]["total_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_exposes_and_executes_registered_and_script_tools(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'dispatcher.db'}")
+    await database.create_schema()
+    cache = ToolResultReuseService(
+        repository=ToolResultCacheRepository(database.session_factory),
+        workspace_id="test-workspace",
+    )
+    executor = SkillScriptExecutor(enabled=True, timeout_seconds=2, max_output_chars=1_000)
+    registry = ToolRegistry()
+
+    async def echo(arguments: dict[str, object]) -> dict[str, object]:
+        return {"echo": arguments["value"]}
+
+    registry.register(
+        ToolDefinition(
+            name="echo",
+            description="Echo one value",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            handler=echo,
+        )
+    )
+    skill = make_script_skill(script="print('ok')\n")
+    skill.manifest.tools.allowed = ["echo"]
+    dispatcher = ToolDispatcher(
+        registry=registry,
+        script_adapter=SkillScriptToolAdapter(executor=executor, result_cache=cache),
+    )
+    tools = dispatcher.resolve(skill)
+
+    assert [tool.definition.name for tool in tools] == ["echo", "run_skill_script"]
+    context = ToolInvocationContext(skill=skill, session_id="session", run_id="run")
+    content, event = await dispatcher.execute(
+        name="echo",
+        arguments_json='{"value":"hello"}',
+        tools=tools,
+        context=context,
+    )
+    assert json.loads(content) == {"echo": "hello"}
+    assert event == {"tool_name": "echo", "ok": True}
+
+    denied, denied_event = await dispatcher.execute(
+        name="not-allowed",
+        arguments_json="{}",
+        tools=tools,
+        context=context,
+    )
+    assert json.loads(denied)["error"]["code"] == "unknown_tool"
+    assert denied_event["error_code"] == "unknown_tool"
+    await database.dispose()
 
 
 @pytest.mark.asyncio

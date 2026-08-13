@@ -287,8 +287,43 @@ class FlowRunResponse(BaseModel):
     preview: bool
     output: dict[str, Any] = Field(default_factory=dict)
     trace: list[NodeTrace] = Field(default_factory=list)
+    node_count: int = 0
+    executed_node_count: int = 0
+    succeeded_node_count: int = 0
+    failed_node_count: int = 0
+    skipped_node_count: int = 0
+    duration_ms: int = 0
+    details_available: bool = True
     started_at: datetime
     completed_at: datetime | None = None
+
+
+class NodeExecutionAggregate(BaseModel):
+    node_id: str
+    node_type: str | None = None
+    execution_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    total_duration_ms: int = 0
+
+
+class FlowRunAggregate(BaseModel):
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    preview: int = 0
+    node_executions: int = 0
+    total_duration_ms: int = 0
+
+
+class FlowRunPageResponse(BaseModel):
+    items: list[FlowRunResponse] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 20
+    offset: int = 0
+    aggregate: FlowRunAggregate = Field(default_factory=FlowRunAggregate)
+    node_stats: list[NodeExecutionAggregate] = Field(default_factory=list)
 
 
 class BusinessPackResponse(BaseModel):

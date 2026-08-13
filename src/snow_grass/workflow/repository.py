@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from snow_grass.workflow.models import (
@@ -470,6 +470,20 @@ class WorkflowRepository:
         completed_at: datetime,
         error: str | None = None,
     ) -> None:
+        node_count = len(traces)
+        executed_node_count = sum(trace.status != "skipped" for trace in traces)
+        succeeded_node_count = sum(trace.status == "succeeded" for trace in traces)
+        failed_node_count = sum(trace.status == "failed" for trace in traces)
+        skipped_node_count = sum(trace.status == "skipped" for trace in traces)
+        duration_ms = max(0, int((completed_at - started_at).total_seconds() * 1000))
+        node_summary = {
+            trace.node_id: {
+                "node_type": trace.node_type,
+                "status": trace.status,
+                "duration_ms": trace.duration_ms,
+            }
+            for trace in traces
+        }
         async with self._session_factory() as session:
             session.add(
                 WorkflowRunRecord(
@@ -483,6 +497,13 @@ class WorkflowRepository:
                     input_summary=input_summary,
                     output_summary=output_summary,
                     error=error,
+                    node_count=node_count,
+                    executed_node_count=executed_node_count,
+                    succeeded_node_count=succeeded_node_count,
+                    failed_node_count=failed_node_count,
+                    skipped_node_count=skipped_node_count,
+                    duration_ms=duration_ms,
+                    node_summary=node_summary,
                     started_at=started_at,
                     completed_at=completed_at,
                 )
@@ -532,15 +553,148 @@ class WorkflowRepository:
         status: str | None = None,
         version_id: str | None = None,
         preview: bool | None = None,
-    ) -> list[WorkflowRunRecord]:
+        started_after: datetime | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[WorkflowRunRecord], int, dict[str, int], list[dict[str, Any]]]:
         async with self._session_factory() as session:
-            query = select(WorkflowRunRecord).order_by(WorkflowRunRecord.started_at.desc())
+            filters = []
             if workflow_id:
-                query = query.where(WorkflowRunRecord.workflow_id == workflow_id)
+                filters.append(WorkflowRunRecord.workflow_id == workflow_id)
             if status:
-                query = query.where(WorkflowRunRecord.status == status)
+                filters.append(WorkflowRunRecord.status == status)
             if version_id:
-                query = query.where(WorkflowRunRecord.resolved_version_id == version_id)
+                filters.append(WorkflowRunRecord.resolved_version_id == version_id)
             if preview is not None:
-                query = query.where(WorkflowRunRecord.preview == preview)
-            return list(await session.scalars(query))
+                filters.append(WorkflowRunRecord.preview == preview)
+            if started_after is not None:
+                filters.append(WorkflowRunRecord.started_at >= started_after)
+
+            query = (
+                select(WorkflowRunRecord)
+                .where(*filters)
+                .order_by(WorkflowRunRecord.started_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            records = list(await session.scalars(query))
+            totals = (
+                await session.execute(
+                    select(
+                        func.count(WorkflowRunRecord.id),
+                        func.sum(case((WorkflowRunRecord.status == "succeeded", 1), else_=0)),
+                        func.sum(case((WorkflowRunRecord.status == "failed", 1), else_=0)),
+                        func.sum(case((WorkflowRunRecord.preview.is_(True), 1), else_=0)),
+                        func.sum(WorkflowRunRecord.executed_node_count),
+                        func.sum(WorkflowRunRecord.duration_ms),
+                    ).where(*filters)
+                )
+            ).one()
+            aggregate = {
+                "total": int(totals[0] or 0),
+                "succeeded": int(totals[1] or 0),
+                "failed": int(totals[2] or 0),
+                "preview": int(totals[3] or 0),
+                "node_executions": int(totals[4] or 0),
+                "total_duration_ms": int(totals[5] or 0),
+            }
+            summaries = list(
+                await session.scalars(select(WorkflowRunRecord.node_summary).where(*filters))
+            )
+            node_totals: dict[str, dict[str, Any]] = {}
+            for summary in summaries:
+                for node_id, item in (summary or {}).items():
+                    target = node_totals.setdefault(
+                        node_id,
+                        {
+                            "node_id": node_id,
+                            "node_type": item.get("node_type"),
+                            "execution_count": 0,
+                            "succeeded_count": 0,
+                            "failed_count": 0,
+                            "skipped_count": 0,
+                            "total_duration_ms": 0,
+                        },
+                    )
+                    target["execution_count"] += int(item.get("status") != "skipped")
+                    status_key = f"{item.get('status')}_count"
+                    if status_key in target:
+                        target[status_key] += 1
+                    target["total_duration_ms"] += int(item.get("duration_ms") or 0)
+            return records, aggregate["total"], aggregate, list(node_totals.values())
+
+    async def purge_run_details_before(self, cutoff: datetime) -> int:
+        purged_at = datetime.now(UTC)
+        async with self._session_factory() as session:
+            run_ids = list(
+                await session.scalars(
+                    select(WorkflowRunRecord.id).where(
+                        WorkflowRunRecord.started_at < cutoff,
+                        WorkflowRunRecord.details_purged_at.is_(None),
+                    )
+                )
+            )
+            if not run_ids:
+                return 0
+            await session.execute(
+                delete(WorkflowNodeRunRecord).where(WorkflowNodeRunRecord.run_id.in_(run_ids))
+            )
+            await session.execute(
+                update(WorkflowRunRecord)
+                .where(WorkflowRunRecord.id.in_(run_ids))
+                .values(
+                    input_summary={},
+                    output_summary={},
+                    error=None,
+                    details_purged_at=purged_at,
+                )
+            )
+            await session.commit()
+            return len(run_ids)
+
+    async def backfill_run_aggregates(self) -> int:
+        async with self._session_factory() as session:
+            runs = list(
+                await session.scalars(
+                    select(WorkflowRunRecord).where(WorkflowRunRecord.node_count == 0)
+                )
+            )
+            if not runs:
+                return 0
+            run_ids = [run.id for run in runs]
+            nodes = list(
+                await session.scalars(
+                    select(WorkflowNodeRunRecord).where(WorkflowNodeRunRecord.run_id.in_(run_ids))
+                )
+            )
+            grouped: dict[str, list[WorkflowNodeRunRecord]] = {}
+            for node in nodes:
+                grouped.setdefault(node.run_id, []).append(node)
+            changed = 0
+            for run in runs:
+                traces = grouped.get(run.id, [])
+                if not traces:
+                    continue
+                run.node_count = len(traces)
+                run.executed_node_count = sum(trace.status != "skipped" for trace in traces)
+                run.succeeded_node_count = sum(trace.status == "succeeded" for trace in traces)
+                run.failed_node_count = sum(trace.status == "failed" for trace in traces)
+                run.skipped_node_count = sum(trace.status == "skipped" for trace in traces)
+                run.duration_ms = max(
+                    0,
+                    int(
+                        ((run.completed_at or run.started_at) - run.started_at).total_seconds()
+                        * 1000
+                    ),
+                )
+                run.node_summary = {
+                    trace.node_id: {
+                        "node_type": trace.node_type,
+                        "status": trace.status,
+                        "duration_ms": trace.duration_ms,
+                    }
+                    for trace in traces
+                }
+                changed += 1
+            await session.commit()
+            return changed

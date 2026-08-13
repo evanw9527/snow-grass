@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -8,6 +9,7 @@ from snow_grass.workflow.schemas import (
     BusinessPackResponse,
     DeploymentRequest,
     DeploymentResponse,
+    FlowRunPageResponse,
     FlowRunResponse,
     FlowValidation,
     PreviewRequest,
@@ -192,19 +194,25 @@ async def rollback(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@workflow_router.get("/workflow-runs", response_model=list[FlowRunResponse])
+@workflow_router.get("/workflow-runs", response_model=FlowRunPageResponse)
 async def workflow_runs(
     request: Request,
     workflow_id: Annotated[str | None, Query(max_length=36)] = None,
     status: Annotated[str | None, Query(max_length=20)] = None,
     version_id: Annotated[str | None, Query(max_length=36)] = None,
     preview: bool | None = None,
-) -> list[FlowRunResponse]:
+    started_after: datetime | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FlowRunPageResponse:
     return await _service(request).list_runs(
         workflow_id=workflow_id,
         status=status,
         version_id=version_id,
         preview=preview,
+        started_after=started_after,
+        limit=limit,
+        offset=offset,
     )
 
 

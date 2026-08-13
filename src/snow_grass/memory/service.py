@@ -17,6 +17,7 @@ from snow_grass.memory.schema import (
     MemorySearchResult,
 )
 from snow_grass.memory.security import MemorySecurity, SensitiveMemoryError
+from snow_grass.memory.time_context import SHANGHAI, local_knowledge_title
 from snow_grass.memory.token_counter import TokenCounter
 from snow_grass.persistence.models import MemoryItemRecord, SessionSummaryRecord
 from snow_grass.persistence.repository import ChatRepository
@@ -97,11 +98,15 @@ class MemoryService:
                 KnowledgeSearchResult(
                     id=item.id,
                     content=item.content,
-                    title=item.title,
+                    title=local_knowledge_title(
+                        title=item.title,
+                        source_type=item.source_type.value,
+                        occurred_at=item.occurred_at,
+                    ),
                     source_type=item.source_type.value,
                     source_id=item.source_id,
                     source_app=item.source_app,
-                    occurred_at=item.occurred_at.isoformat(),
+                    occurred_at=item.occurred_at.astimezone(SHANGHAI).isoformat(),
                     score=item.score,
                 )
                 for item in result.items

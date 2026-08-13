@@ -77,7 +77,8 @@ class KnowledgeService:
             or "该时段没有足够内容生成总结。"
         )
         occurred_at = _utc(summary.period_start)
-        title = summary.title or f"工作总结 · {occurred_at:%Y-%m-%d %H:00}"
+        local_occurred_at = occurred_at.astimezone(_SHANGHAI)
+        title = summary.title or f"工作总结 · {local_occurred_at:%Y-%m-%d %H:00}"
         keywords = json.loads(summary.keywords_json or "[]")
         item = KnowledgeDocumentInput(
             source_type=KnowledgeSourceType.hourly_summary,
@@ -343,6 +344,7 @@ def _hash(item: KnowledgeDocumentInput) -> str:
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _WORK_OVERVIEW_MARKERS = (
+    "工作",
     "日常工作",
     "工作内容",
     "工作总结",
@@ -364,12 +366,14 @@ _ACTIVITY_META_MARKERS = (
 _TERMINAL_APPS = {"iterm2", "terminal", "终端"}
 
 
-def _work_overview_range(query: str) -> tuple[datetime, datetime] | None:
+def _work_overview_range(
+    query: str, *, now: datetime | None = None
+) -> tuple[datetime, datetime] | None:
     normalized = "".join(query.casefold().split())
     if not any(marker in normalized for marker in _WORK_OVERVIEW_MARKERS):
         return None
 
-    local_now = datetime.now(_SHANGHAI)
+    local_now = now.astimezone(_SHANGHAI) if now is not None else datetime.now(_SHANGHAI)
     today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     if "昨天" in normalized or "昨日" in normalized:
         local_start = today - timedelta(days=1)

@@ -11,6 +11,19 @@ from snow_grass.workflow.runtime import ComponentRuntimeRegistry, NodeExecutionC
 from snow_grass.workflow.schemas import EdgeCondition, FlowRunResponse, NodeTrace
 
 _MISSING = object()
+_SENSITIVE_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "passwd",
+    "private_key",
+    "secret",
+    "session",
+    "token",
+}
 
 
 class WorkflowExecutor:
@@ -54,7 +67,7 @@ class WorkflowExecutor:
                         node_type=component.component_key,
                         status="skipped",
                         duration_ms=0,
-                        input_port_summary=_summarize_ports(inputs),
+                        input_port_summary=_snapshot_ports(inputs),
                         skip_reason=reason,
                     )
                 )
@@ -99,8 +112,8 @@ class WorkflowExecutor:
                         duration_ms=max(0, int((perf_counter() - tick) * 1000)),
                         input_summary=_summarize(inputs),
                         output_summary=_summarize(result.outputs_by_port),
-                        input_port_summary=_summarize_ports(inputs),
-                        output_port_summary=_summarize_ports(result.outputs_by_port),
+                        input_port_summary=_snapshot_ports(inputs),
+                        output_port_summary=_snapshot_ports(result.outputs_by_port),
                     )
                 )
             except Exception as exc:
@@ -112,12 +125,13 @@ class WorkflowExecutor:
                         node_type=component.component_key,
                         status="failed",
                         duration_ms=max(0, int((perf_counter() - tick) * 1000)),
-                        input_port_summary=_summarize_ports(inputs),
+                        input_port_summary=_snapshot_ports(inputs),
                         error=str(exc),
                     )
                 )
         if pack.output_adapter and not failed:
             workflow_output = await pack.output_adapter(workflow_output)
+        completed_at = datetime.now(UTC)
         return FlowRunResponse(
             run_id=run_id,
             workflow_id=workflow_id,
@@ -128,13 +142,50 @@ class WorkflowExecutor:
             preview=preview,
             output=workflow_output,
             trace=traces,
+            node_count=len(traces),
+            executed_node_count=sum(trace.status != "skipped" for trace in traces),
+            succeeded_node_count=sum(trace.status == "succeeded" for trace in traces),
+            failed_node_count=sum(trace.status == "failed" for trace in traces),
+            skipped_node_count=sum(trace.status == "skipped" for trace in traces),
+            duration_ms=max(0, int((completed_at - started_at).total_seconds() * 1000)),
             started_at=started_at,
-            completed_at=datetime.now(UTC),
+            completed_at=completed_at,
         )
 
 
 def _summarize_ports(values: dict[str, Any]) -> dict[str, Any]:
     return {key: _summary_value(value) for key, value in values.items()}
+
+
+def _snapshot_ports(values: dict[str, Any]) -> dict[str, Any]:
+    return {key: _snapshot_value(value, key=key) for key, value in values.items()}
+
+
+def _snapshot_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    normalized_key = key.lower().replace("-", "_")
+    if any(marker in normalized_key for marker in _SENSITIVE_KEYS):
+        return "[REDACTED]"
+    if depth >= 6:
+        return {"_truncated": "max_depth", "type": type(value).__name__}
+    if isinstance(value, dict):
+        keys = list(value)[:100]
+        snapshot = {
+            str(item_key): _snapshot_value(item, key=str(item_key), depth=depth + 1)
+            for item_key, item in ((item_key, value[item_key]) for item_key in keys)
+        }
+        if len(value) > len(keys):
+            snapshot["_truncated"] = {"keys_omitted": len(value) - len(keys)}
+        return snapshot
+    if isinstance(value, (list, tuple)):
+        items = [_snapshot_value(item, depth=depth + 1) for item in value[:100]]
+        if len(value) > len(items):
+            items.append({"_truncated": {"items_omitted": len(value) - len(items)}})
+        return items
+    if isinstance(value, str):
+        return value if len(value) <= 4000 else value[:4000] + "…[TRUNCATED]"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return repr(value)[:4000]
 
 
 def _summarize(value: Any) -> dict[str, Any]:

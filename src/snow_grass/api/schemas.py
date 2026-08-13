@@ -13,6 +13,16 @@ class CreateSessionRequest(BaseModel):
     model_id: str | None = None
     skill_id: str | None = None
     knowledge_enabled: bool = False
+    runtime_id: str = Field(default="native", pattern=r"^[a-z][a-z0-9-]*$", max_length=40)
+
+
+class AgentRuntimeResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    available: bool
+    capabilities: list[str]
+    unavailable_reason: str | None = None
 
 
 class UpdateSessionKnowledgeRequest(BaseModel):
@@ -27,6 +37,7 @@ class SessionResponse(BaseModel):
     model_id: str
     skill_id: str | None
     knowledge_enabled: bool
+    runtime_id: str
     created_at: datetime
     updated_at: datetime
 

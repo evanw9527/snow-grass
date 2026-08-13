@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     memory_retrieval_limit: int = Field(default=8, ge=0, le=50)
     memory_auto_extract_enabled: bool = False
     activity_retention_days: int = Field(default=30, ge=1, le=3650)
+    workflow_run_detail_retention_days: int = Field(default=5, ge=1, le=3650)
+    workflow_run_cleanup_interval_minutes: int = Field(default=60, ge=1, le=1440)
     knowledge_enabled: bool = True
     knowledge_retrieval_limit: int = Field(default=8, ge=0, le=20)
     knowledge_context_token_budget: int = Field(default=2_000, ge=128, le=32_000)

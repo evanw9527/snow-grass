@@ -13,6 +13,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    inspect,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -25,6 +27,28 @@ class Base(DeclarativeBase):
     pass
 
 
+def _restore_utc_timezone(target: object) -> None:
+    """SQLite drops timezone metadata; restore the UTC contract on every ORM read."""
+    mapper = inspect(target).mapper
+    for attribute in mapper.column_attrs:
+        column = attribute.columns[0]
+        if not isinstance(column.type, DateTime):
+            continue
+        value = getattr(target, attribute.key, None)
+        if isinstance(value, datetime) and value.tzinfo is None:
+            setattr(target, attribute.key, value.replace(tzinfo=UTC))
+
+
+@event.listens_for(Base, "load", propagate=True)
+def _on_record_load(target: object, _context: object) -> None:
+    _restore_utc_timezone(target)
+
+
+@event.listens_for(Base, "refresh", propagate=True)
+def _on_record_refresh(target: object, _context: object, _attrs: object) -> None:
+    _restore_utc_timezone(target)
+
+
 class SessionRecord(Base):
     __tablename__ = "chat_sessions"
 
@@ -33,6 +57,9 @@ class SessionRecord(Base):
     model_id: Mapped[str] = mapped_column(String(120))
     skill_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     knowledge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    runtime_id: Mapped[str] = mapped_column(
+        String(40), default="native", server_default="native"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -55,6 +82,30 @@ class MessageRecord(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentRunRecord(Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (Index("ix_agent_runs_session_created", "session_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True
+    )
+    runtime_id: Mapped[str] = mapped_column(String(40))
+    model_id: Mapped[str] = mapped_column(String(120))
+    skill_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
 
 class SessionSummaryRecord(Base):

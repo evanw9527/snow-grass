@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any, Literal, cast
 
@@ -21,6 +21,7 @@ from snow_grass.workflow.schemas import (
     ComponentVersionResponse,
     DeploymentResponse,
     FlowGraph,
+    FlowRunPageResponse,
     FlowRunResponse,
     FlowValidation,
     NodeTrace,
@@ -219,12 +220,17 @@ class WorkflowService:
         factories: RuntimeFactoryCatalog,
         compiler: WorkflowCompiler,
         executor: WorkflowExecutor,
+        detail_retention_days: int = 5,
+        cleanup_interval_minutes: int = 60,
     ) -> None:
         self._repository = repository
         self._packs = packs
         self._factories = factories
         self._compiler = compiler
         self._executor = executor
+        self._detail_retention = timedelta(days=detail_retention_days)
+        self._cleanup_interval = timedelta(minutes=cleanup_interval_minutes)
+        self._last_cleanup_at: datetime | None = None
 
     async def initialize(self) -> None:
         specs = {spec.key: spec for pack in self._packs.all() for spec in pack.component_specs}
@@ -238,6 +244,8 @@ class WorkflowService:
         }
         await self._repository.seed_system_components(list(specs.values()), source_snapshots)
         await WorkflowV2DataMigration(self._repository.session_factory).migrate()
+        await self._repository.backfill_run_aggregates()
+        await self._maybe_cleanup(force=True)
         for pack in self._packs.all():
             workflow = await self._repository.get_by_business(pack.business_type)
             if workflow is None:
@@ -461,10 +469,16 @@ class WorkflowService:
         return result
 
     async def get_run(self, run_id: str) -> FlowRunResponse:
+        await self._maybe_cleanup()
         found = await self._repository.get_run(run_id)
         if found is None:
             raise LookupError("Workflow run not found")
         run, nodes = found
+        return self._run_response(run, nodes)
+
+    @staticmethod
+    def _run_response(run: Any, nodes: list[Any] | None = None) -> FlowRunResponse:
+        nodes = nodes or []
         return FlowRunResponse(
             run_id=run.id,
             workflow_id=run.workflow_id,
@@ -492,6 +506,13 @@ class WorkflowService:
             ],
             started_at=run.started_at,
             completed_at=run.completed_at,
+            node_count=run.node_count,
+            executed_node_count=run.executed_node_count,
+            succeeded_node_count=run.succeeded_node_count,
+            failed_node_count=run.failed_node_count,
+            skipped_node_count=run.skipped_node_count,
+            duration_ms=run.duration_ms,
+            details_available=run.details_purged_at is None,
         )
 
     async def list_runs(
@@ -501,14 +522,28 @@ class WorkflowService:
         status: str | None = None,
         version_id: str | None = None,
         preview: bool | None = None,
-    ) -> list[FlowRunResponse]:
-        records = await self._repository.list_runs(
+        started_after: datetime | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> FlowRunPageResponse:
+        await self._maybe_cleanup()
+        records, total, aggregate, node_stats = await self._repository.list_runs(
             workflow_id=workflow_id,
             status=status,
             version_id=version_id,
             preview=preview,
+            started_after=started_after,
+            limit=limit,
+            offset=offset,
         )
-        return [await self.get_run(record.id) for record in records]
+        return FlowRunPageResponse(
+            items=[self._run_response(record) for record in records],
+            total=total,
+            limit=limit,
+            offset=offset,
+            aggregate=aggregate,
+            node_stats=node_stats,
+        )
 
     async def _summary(self, record: Any) -> WorkflowSummary:
         version = await self._repository.latest_version(record.id)
@@ -546,6 +581,18 @@ class WorkflowService:
             completed_at=result.completed_at or datetime.now(UTC),
             error=result.trace[-1].error if result.status == "failed" and result.trace else None,
         )
+        await self._maybe_cleanup()
+
+    async def _maybe_cleanup(self, *, force: bool = False) -> None:
+        now = datetime.now(UTC)
+        if (
+            not force
+            and self._last_cleanup_at
+            and now - self._last_cleanup_at < self._cleanup_interval
+        ):
+            return
+        await self._repository.purge_run_details_before(now - self._detail_retention)
+        self._last_cleanup_at = now
 
 
 def _safe_summary(value: dict[str, Any]) -> dict[str, object]:

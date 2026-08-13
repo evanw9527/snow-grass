@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from snow_grass.memory.schema import ContextStats
 from snow_grass.persistence.models import (
+    AgentRunRecord,
     ContextRunRecord,
     MemoryItemRecord,
     MessageRecord,
@@ -136,6 +137,7 @@ class ChatRepository:
         model_id: str,
         skill_id: str | None = None,
         knowledge_enabled: bool = False,
+        runtime_id: str = "native",
     ) -> SessionRecord:
         record = SessionRecord(
             id=str(uuid4()),
@@ -143,12 +145,66 @@ class ChatRepository:
             model_id=model_id,
             skill_id=skill_id,
             knowledge_enabled=knowledge_enabled,
+            runtime_id=runtime_id,
         )
         async with self._session_factory() as session:
             session.add(record)
             await session.commit()
             await session.refresh(record)
         return record
+
+    async def start_agent_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        runtime_id: str,
+        model_id: str,
+        skill_id: str | None,
+    ) -> AgentRunRecord:
+        record = AgentRunRecord(
+            id=run_id,
+            session_id=session_id,
+            runtime_id=runtime_id,
+            model_id=model_id,
+            skill_id=skill_id,
+            status="running",
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+        return record
+
+    async def finish_agent_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        duration_ms: int,
+        skill_id: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        tool_call_count: int = 0,
+        error_code: str | None = None,
+    ) -> AgentRunRecord | None:
+        async with self._session_factory() as session:
+            record = await session.get(AgentRunRecord, run_id)
+            if record is None:
+                return None
+            record.status = status
+            record.duration_ms = max(0, duration_ms)
+            record.skill_id = skill_id
+            record.input_tokens = max(0, input_tokens)
+            record.output_tokens = max(0, output_tokens)
+            record.total_tokens = max(0, total_tokens)
+            record.tool_call_count = max(0, tool_call_count)
+            record.error_code = error_code
+            record.updated_at = utc_now()
+            await session.commit()
+            await session.refresh(record)
+            return record
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         async with self._session_factory() as session:

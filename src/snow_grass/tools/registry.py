@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from snow_grass.providers.base import ChatTool, ChatToolFunction
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -12,6 +14,18 @@ class ToolDefinition:
     name: str
     description: str
     handler: ToolHandler
+    parameters: dict[str, Any]
+    risk_level: Literal["low", "medium", "high"] = "low"
+    result_type: str = "json"
+
+    def to_chat_tool(self) -> ChatTool:
+        return ChatTool(
+            function=ChatToolFunction(
+                name=self.name,
+                description=self.description,
+                parameters=self.parameters,
+            )
+        )
 
 
 class ToolRegistry:
@@ -27,6 +41,9 @@ class ToolRegistry:
 
     def list_allowed(self, allowed_names: list[str]) -> list[ToolDefinition]:
         return [self._tools[name] for name in allowed_names if name in self._tools]
+
+    def contains(self, name: str) -> bool:
+        return name in self._tools
 
     async def execute(self, name: str, arguments: dict[str, Any], allowed_names: list[str]) -> Any:
         if name not in allowed_names:

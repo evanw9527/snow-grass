@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from snow_grass.workflow.compiler import CompiledNode, CompiledPlan
-from snow_grass.workflow.executor import WorkflowExecutor, _edge_matches
+from snow_grass.workflow.executor import WorkflowExecutor, _edge_matches, _snapshot_ports
 from snow_grass.workflow.registry import (
     BusinessPack,
     ComponentRuntimeFactory,
@@ -103,6 +103,21 @@ def test_edge_condition_supports_nested_paths_and_safe_operators() -> None:
     assert _edge_matches(payload, EdgeCondition(path="labels", operator="contains", value="safe"))
     assert _edge_matches(payload, EdgeCondition(path="result.score", operator="exists"))
     assert not _edge_matches(payload, EdgeCondition(path="result.missing", operator="truthy"))
+
+
+def test_port_snapshot_preserves_values_and_redacts_secrets() -> None:
+    snapshot = _snapshot_ports(
+        {
+            "payload": {
+                "message": "可追踪内容",
+                "access_token": "must-not-leak",
+                "nested": [1, {"password": "must-not-leak"}],
+            }
+        }
+    )
+    assert snapshot["payload"]["message"] == "可追踪内容"
+    assert snapshot["payload"]["access_token"] == "[REDACTED]"
+    assert snapshot["payload"]["nested"][1]["password"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio

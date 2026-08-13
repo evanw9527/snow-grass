@@ -11,7 +11,6 @@ from time import monotonic
 
 from pydantic import BaseModel, Field
 
-from snow_grass.providers.base import ChatTool, ChatToolFunction
 from snow_grass.skills.schema import LoadedSkill
 
 RUN_SKILL_SCRIPT_TOOL = "run_skill_script"
@@ -68,47 +67,6 @@ class SkillScriptExecutor:
             if self._is_safe_package_path(path)
             and path.startswith("scripts/")
             and path.endswith(".py")
-        )
-
-    def tool_for(self, skill: LoadedSkill) -> ChatTool | None:
-        scripts = self.list_scripts(skill)
-        if not scripts:
-            return None
-        return ChatTool(
-            function=ChatToolFunction(
-                name=RUN_SKILL_SCRIPT_TOOL,
-                description=(
-                    "Run one reviewed Python script from the active Skill package. "
-                    f"Available scripts: {', '.join(scripts)}. Pass arguments as separate "
-                    "strings. Never put a shell command in an argument."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "script": {
-                            "type": "string",
-                            "enum": scripts,
-                            "description": "Relative path of the packaged Python script.",
-                        },
-                        "args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "maxItems": self._max_args,
-                            "description": "Command-line arguments passed without a shell.",
-                        },
-                        "cache_policy": {
-                            "type": "string",
-                            "enum": ["prefer-cache", "refresh", "no-store"],
-                            "description": (
-                                "Cache preference hint. The runtime makes the final decision from "
-                                "the user's explicit refresh intent."
-                            ),
-                        },
-                    },
-                    "required": ["script"],
-                    "additionalProperties": False,
-                },
-            )
         )
 
     async def execute(

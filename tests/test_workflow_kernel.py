@@ -133,6 +133,16 @@ def test_second_business_reuses_kernel_and_trace(tmp_path: Path) -> None:
         assert stored.status_code == 200
         assert len(stored.json()["trace"]) == 4
 
+        page = client.get(
+            f"/api/v1/workflow-runs?workflow_id={workflow['id']}&limit=1&offset=0"
+        )
+        assert page.status_code == 200
+        assert page.json()["total"] == 1
+        assert len(page.json()["items"]) == 1
+        assert page.json()["aggregate"]["node_executions"] == 4
+        assert len(page.json()["node_stats"]) == 4
+        assert page.json()["items"][0]["started_at"].endswith("Z")
+
 
 def test_cycle_is_rejected_by_common_validator(tmp_path: Path) -> None:
     with _client(tmp_path) as client:

@@ -149,6 +149,16 @@ class WorkflowRunRecord(Base):
     input_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     output_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    node_count: Mapped[int] = mapped_column(Integer, default=0)
+    executed_node_count: Mapped[int] = mapped_column(Integer, default=0)
+    succeeded_node_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_node_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_node_count: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    node_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    details_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

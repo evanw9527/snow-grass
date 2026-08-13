@@ -12,8 +12,12 @@ from snow_grass.activity.repository import ActivityRepository
 from snow_grass.activity.router import activity_router
 from snow_grass.activity.service import ActivityService
 from snow_grass.activity.summary_pack import register_activity_summary_pack
+from snow_grass.agent.native_runtime import NativeAgentRuntime
+from snow_grass.agent.openai_agents_runtime import OpenAIAgentsRuntime
 from snow_grass.agent.runner import AgentRunner
+from snow_grass.agent.runtime_registry import AgentRuntimeRegistry
 from snow_grass.agent.skill_selector import HybridSkillSelector
+from snow_grass.agent.tool_adapter import SkillScriptToolAdapter, ToolDispatcher
 from snow_grass.api.router import api_router
 from snow_grass.core.config import Settings, get_settings
 from snow_grass.feedback.flow_pack import register_negative_feedback_pack
@@ -100,6 +104,8 @@ def create_app(
         factories=workflow_factories,
         compiler=workflow_compiler,
         executor=WorkflowExecutor(workflow_runtimes),
+        detail_retention_days=app_settings.workflow_run_detail_retention_days,
+        cleanup_interval_minutes=app_settings.workflow_run_cleanup_interval_minutes,
     )
     component_service = ComponentService(
         repository=workflow_repository,
@@ -117,6 +123,13 @@ def create_app(
     tool_result_cache = ToolResultReuseService(
         repository=ToolResultCacheRepository(app_database.session_factory),
         workspace_id=app_settings.memory_workspace_id,
+    )
+    tool_dispatcher = ToolDispatcher(
+        registry=tools,
+        script_adapter=SkillScriptToolAdapter(
+            executor=skill_executor,
+            result_cache=tool_result_cache,
+        ),
     )
     codex_usage = CodexUsageService(app_database.session_factory, app_settings.codex_state_db_path)
     skill_repository = SkillRepository(app_database.session_factory)
@@ -147,19 +160,27 @@ def create_app(
         security=MemorySecurity(),
         knowledge=knowledge_service,
     )
+    skill_selector = HybridSkillSelector(
+        providers=app_providers,
+        skills=app_skills,
+        rule_threshold=app_settings.skill_selection_rule_threshold,
+        rule_margin=app_settings.skill_selection_rule_margin,
+        model_confidence_threshold=app_settings.skill_selection_model_confidence,
+        timeout_seconds=app_settings.skill_selection_model_timeout_seconds,
+    )
     runner = AgentRunner(
         providers=app_providers,
-        skill_selector=HybridSkillSelector(
-            providers=app_providers,
-            skills=app_skills,
-            rule_threshold=app_settings.skill_selection_rule_threshold,
-            rule_margin=app_settings.skill_selection_rule_margin,
-            model_confidence_threshold=app_settings.skill_selection_model_confidence,
-            timeout_seconds=app_settings.skill_selection_model_timeout_seconds,
-        ),
-        tools=tools,
-        skill_executor=skill_executor,
-        tool_result_cache=tool_result_cache,
+        skill_selector=skill_selector,
+        tool_dispatcher=tool_dispatcher,
+    )
+    agent_runtimes = AgentRuntimeRegistry()
+    agent_runtimes.register(NativeAgentRuntime(runner))
+    agent_runtimes.register(
+        OpenAIAgentsRuntime(
+            settings=app_settings,
+            skill_selector=skill_selector,
+            tool_dispatcher=tool_dispatcher,
+        )
     )
 
     @asynccontextmanager
@@ -187,8 +208,10 @@ def create_app(
     application.state.skill_service = skill_service
     application.state.skill_executor = skill_executor
     application.state.tool_result_cache = tool_result_cache
+    application.state.tool_dispatcher = tool_dispatcher
     application.state.tools = tools
     application.state.runner = runner
+    application.state.agent_runtimes = agent_runtimes
     application.state.memory = memory
     application.state.pet_service = pet_service
     application.state.activity_service = activity_service

@@ -35,6 +35,7 @@ class Database:
             await self._migrate_sqlite_activity_summary_flow(connection)
             await self._migrate_sqlite_activity_summary_knowledge(connection)
             await self._migrate_sqlite_session_knowledge(connection)
+            await self._migrate_sqlite_session_runtime(connection)
             await self._initialize_sqlite_knowledge_fts(connection)
 
     async def _migrate_sqlite_workflow_v2_schema(self, connection: AsyncConnection) -> None:
@@ -57,7 +58,17 @@ class Database:
                 "source_language": "VARCHAR(40) NOT NULL DEFAULT 'python'",
                 "source_path": "VARCHAR(500)",
             },
-            "workflow_runs": {"resolved_version_id": "VARCHAR(36)"},
+            "workflow_runs": {
+                "resolved_version_id": "VARCHAR(36)",
+                "node_count": "INTEGER NOT NULL DEFAULT 0",
+                "executed_node_count": "INTEGER NOT NULL DEFAULT 0",
+                "succeeded_node_count": "INTEGER NOT NULL DEFAULT 0",
+                "failed_node_count": "INTEGER NOT NULL DEFAULT 0",
+                "skipped_node_count": "INTEGER NOT NULL DEFAULT 0",
+                "duration_ms": "INTEGER NOT NULL DEFAULT 0",
+                "node_summary": "JSON NOT NULL DEFAULT '{}'",
+                "details_purged_at": "DATETIME",
+            },
             "workflow_node_runs": {
                 "component_version_id": "VARCHAR(36)",
                 "input_port_summary": "JSON NOT NULL DEFAULT '{}'",
@@ -188,6 +199,22 @@ class Database:
                 text(
                     "ALTER TABLE chat_sessions ADD COLUMN knowledge_enabled "
                     "BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+
+    async def _migrate_sqlite_session_runtime(self, connection: AsyncConnection) -> None:
+        if connection.dialect.name != "sqlite":
+            return
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                column["name"] for column in inspect(sync_connection).get_columns("chat_sessions")
+            }
+        )
+        if "runtime_id" not in columns:
+            await connection.execute(
+                text(
+                    "ALTER TABLE chat_sessions ADD COLUMN runtime_id "
+                    "VARCHAR(40) NOT NULL DEFAULT 'native'"
                 )
             )
 

@@ -3,14 +3,17 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from time import monotonic
 from typing import NoReturn, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
-from snow_grass.agent.runner import AgentRunner
+from snow_grass.agent.runtime import AgentRunRequest
+from snow_grass.agent.runtime_registry import AgentRuntimeError, AgentRuntimeRegistry
 from snow_grass.api.schemas import (
     AdminSkillSummaryResponse,
+    AgentRuntimeResponse,
     ArchiveSkillRequest,
     ArchiveSkillResponse,
     CloneSkillRequest,
@@ -75,6 +78,12 @@ async def list_models(request: Request) -> list[ModelInfo]:
 async def list_skills(request: Request) -> list[SkillInfo]:
     registry = cast(SkillRegistry, _state(request, "skills"))
     return registry.list_skills()
+
+
+@api_router.get("/agent-runtimes", response_model=list[AgentRuntimeResponse])
+async def list_agent_runtimes(request: Request) -> list[object]:
+    registry = cast(AgentRuntimeRegistry, _state(request, "agent_runtimes"))
+    return list(registry.list())
 
 
 def _skill_service(request: Request) -> SkillService:
@@ -258,11 +267,16 @@ async def create_session(request: Request, payload: CreateSessionRequest) -> obj
     settings = cast(Settings, _state(request, "settings"))
     providers = cast(ProviderRegistry, _state(request, "providers"))
     repository = cast(ChatRepository, _state(request, "repository"))
+    runtimes = cast(AgentRuntimeRegistry, _state(request, "agent_runtimes"))
     model_id = payload.model_id or settings.default_model_id
     if not providers.has_model(model_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown model: {model_id}"
         )
+    try:
+        runtimes.resolve(payload.runtime_id)
+    except AgentRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if payload.skill_id:
         skills = cast(SkillRegistry, _state(request, "skills"))
         try:
@@ -274,6 +288,7 @@ async def create_session(request: Request, payload: CreateSessionRequest) -> obj
         model_id=model_id,
         skill_id=payload.skill_id,
         knowledge_enabled=payload.knowledge_enabled,
+        runtime_id=payload.runtime_id,
     )
 
 
@@ -469,10 +484,14 @@ async def stream_message(
     settings = cast(Settings, _state(request, "settings"))
     repository = cast(ChatRepository, _state(request, "repository"))
     providers = cast(ProviderRegistry, _state(request, "providers"))
-    runner = cast(AgentRunner, _state(request, "runner"))
+    runtimes = cast(AgentRuntimeRegistry, _state(request, "agent_runtimes"))
     chat_session = await repository.get_session(session_id)
     if chat_session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    try:
+        runtime = runtimes.resolve(chat_session.runtime_id)
+    except AgentRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     model_id = payload.model_id or chat_session.model_id
     if not providers.has_model(model_id):
@@ -503,33 +522,92 @@ async def stream_message(
     )
 
     async def event_stream() -> AsyncIterator[str]:
-        async for event in runner.stream(
-            model_id=model_id,
-            context=context,
-            skill_id=skill_id,
-            session_id=session_id,
-        ):
-            completed_content: str | None = None
-            if event.type == "message.completed":
-                usage = cast(dict[str, int], event.data.get("usage") or {})
-                completed_content = str(event.data["content"])
-                await repository.add_message(
-                    session_id=session_id,
-                    role="assistant",
-                    content=completed_content,
+        started_at = monotonic()
+        run_id: str | None = None
+        run_skill_id = skill_id
+        usage: dict[str, int] = {}
+        tool_call_count = 0
+        finalized = False
+        try:
+            async for event in runtime.stream(
+                AgentRunRequest(
                     model_id=model_id,
-                    skill_id=cast(str | None, event.data.get("skill_id")),
+                    context=context,
+                    skill_id=skill_id,
+                    session_id=session_id,
+                )
+            ):
+                completed_content: str | None = None
+                if event.type == "run.started":
+                    run_id = event.run_id
+                    await repository.start_agent_run(
+                        run_id=run_id,
+                        session_id=session_id,
+                        runtime_id=chat_session.runtime_id,
+                        model_id=model_id,
+                        skill_id=skill_id,
+                    )
+                elif event.type == "message.completed":
+                    usage = cast(dict[str, int], event.data.get("usage") or {})
+                    tool_call_count = int(event.data.get("tool_call_count", tool_call_count))
+                    run_skill_id = cast(str | None, event.data.get("skill_id"))
+                    completed_content = str(event.data["content"])
+                    await repository.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=completed_content,
+                        model_id=model_id,
+                        skill_id=run_skill_id,
+                        input_tokens=int(usage.get("input_tokens", 0)),
+                        output_tokens=int(usage.get("output_tokens", 0)),
+                        total_tokens=int(usage.get("total_tokens", 0)),
+                    )
+                elif event.type == "run.completed" and run_id is not None:
+                    tool_call_count = int(event.data.get("tool_call_count", tool_call_count))
+                    await repository.finish_agent_run(
+                        run_id=run_id,
+                        status="completed",
+                        duration_ms=round((monotonic() - started_at) * 1_000),
+                        skill_id=run_skill_id,
+                        input_tokens=int(usage.get("input_tokens", 0)),
+                        output_tokens=int(usage.get("output_tokens", 0)),
+                        total_tokens=int(usage.get("total_tokens", 0)),
+                        tool_call_count=tool_call_count,
+                    )
+                    finalized = True
+                elif event.type == "run.failed" and run_id is not None:
+                    await repository.finish_agent_run(
+                        run_id=run_id,
+                        status="failed",
+                        duration_ms=round((monotonic() - started_at) * 1_000),
+                        skill_id=run_skill_id,
+                        input_tokens=int(usage.get("input_tokens", 0)),
+                        output_tokens=int(usage.get("output_tokens", 0)),
+                        total_tokens=int(usage.get("total_tokens", 0)),
+                        tool_call_count=tool_call_count,
+                        error_code=str(event.data.get("code") or "runtime_failed"),
+                    )
+                    finalized = True
+                yield event.to_sse()
+                if completed_content is not None:
+                    await memory.extract_candidates(
+                        session_id=session_id,
+                        model_id=model_id,
+                        user_content=payload.content,
+                        assistant_content=completed_content,
+                    )
+        finally:
+            if run_id is not None and not finalized:
+                await repository.finish_agent_run(
+                    run_id=run_id,
+                    status="aborted",
+                    duration_ms=round((monotonic() - started_at) * 1_000),
+                    skill_id=run_skill_id,
                     input_tokens=int(usage.get("input_tokens", 0)),
                     output_tokens=int(usage.get("output_tokens", 0)),
                     total_tokens=int(usage.get("total_tokens", 0)),
-                )
-            yield event.to_sse()
-            if completed_content is not None:
-                await memory.extract_candidates(
-                    session_id=session_id,
-                    model_id=model_id,
-                    user_content=payload.content,
-                    assistant_content=completed_content,
+                    tool_call_count=tool_call_count,
+                    error_code="stream_aborted",
                 )
 
     return StreamingResponse(
